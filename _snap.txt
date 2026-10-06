@@ -1,0 +1,86 @@
+def _route_one_color(
+    tokens: list,
+    code: str,
+    connect_mm: float | None = None,
+    solid_mask: np.ndarray | None = None,
+    mmp: float | None = None,
+) -> list:
+    """Reordena los eventos de un único color en filas zigzag.
+
+    `tokens` son parejas (inicio, fin) de las puntadas cortas generadas por
+    el relleno, ya todas del mismo código. Se agrupan por fila (mismo Y) y
+    dentro de cada fila se recorren de izquierda a derecha y, en la fila
+    siguiente, de derecha a izquierda (ida y vuelta). Entre dos puntadas
+    consecutivas del mismo color:
+
+    - Si la distancia es <= el umbral (1.8x la mediana del paso de la fila,
+      nunca menos de ROW_CONNECT_MM, y nunca menos de `connect_mm` si se
+      indica) la aguja sigue abajo y se emite solo el final de la puntada (el
+      desplazamiento se dibuja como una puntada corta más, sin salto).
+    - Si la distancia es mayor (hueco o zona separada del mismo color) se
+      emite el par salto + puntada con aguja arriba, que no se dibuja.
+
+    El umbral es UNIFORME: vale igual para dos puntadas consecutivas de una
+    misma fila, entre el final de una región y el inicio de la siguiente del
+    mismo color, o entre el contorno y el relleno de una misma región. No hay
+    una lógica distinta entre "dentro de una componente" y "entre
+    componentes": ambas pasan por la misma comparación de distancia punto a
+    punto. `connect_mm` (piso configurable, ver CONNECT_NO_TRIM_MM) amplía
+    ese umbral hacia arriba para NO cortar la hebra entre trazos/regiones del
+    mismo color separados por pocos milímetros (el último punto cosido y el
+    primero del siguiente quedan ~2.5 mm dentro de cada trazo). `None` o <= 0
+    deja solo el criterio adaptativo.
+
+    No se añaden ni eliminan puntadas reales: solo cambia el orden de
+    recorrido y cuántos saltos sobran (uno por fila/zona en lugar de uno por
+    puntada).
+
+    Los eventos pueden ser 3-tuplas (x, y, código) o 4-tuplas con una
+    "rowkey" (x, y, código, rowkey). Con 3-tuplas las filas se agrupan por la
+    coordenada Y exacta (relleno horizontal clásico). Con 4-tuplas la rowkey
+    identifica la fila del relleno local (p. ej. la fila scanline de una
+    región ya rotada, cuyas puntadas no comparten Y global): rowkeys únicas
+    conservan el recorrido contiguo de cada región y el zigzag alterna solo
+    entre aquellas que comparten fila.
+    """
+    rows = {}
+    for j, s in tokens:
+        key = s[3] if len(s) > 3 else s[1]
+        rows.setdefault(key, []).append((j, s))
+
+    # Umbral adaptativo al paso real de este color: la distancia euclídea
+    # entre puntos CONSECUTIVOS de cada fila en ORDEN de emisión (no entre
+    # puntos ordenados por X). Ordenar por X deja gaps degenerados de 0 mm
+    # cuando la región rotada corre vertical (todas las puntadas de una fila
+    # comparten X global) y la mediana se hunde a 0 -> el enrutado volvería a
+    # tratar cada puntada larga (2-3 mm) como un salto. Se descartan los
+    # enlaces <0.5 mm (duplicados/proyecciones colapsadas) para que la
+    # mediana capture el paso largo del relleno cuando existe.
+    gaps = []
+    for y in rows:
+        pts = [s for _, s in rows[y]]
+        for a, b in zip(pts, pts[1:]):
+            d = math.hypot(b[0] - a[0], b[1] - a[1])
+            if d >= 0.5:
+                gaps.append(d)
+    pitch = sorted(gaps)[len(gaps) // 2] if gaps else 0.0
+    limit = max(ROW_CONNECT_MM, 1.8 * pitch)
+    if connect_mm and connect_mm > 0:
+        limit = max(limit, connect_mm)
+    limit2 = limit * limit
+
+    out = []
+    prev = None
+    for r, key in enumerate(sorted(rows, key=lambda k: k if isinstance(k, int) else k)):
+        plist = rows[key]
+        plist.sort(key=lambda js: js[1][0])
+        if r % 2:
+            plist.reverse()
+        for j, s in plist:
+            if (
+                prev is not None
+                and (s[0] - prev[0]) ** 2 + (s[1] - prev[1]) ** 2 <= limit2
+            ):
+                out.append((s[0], s[1], code))
+            else:
+                out.append((j[0], j[1], JUMP_SENTINEL))

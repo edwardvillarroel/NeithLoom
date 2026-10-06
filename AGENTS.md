@@ -1,0 +1,76 @@
+# AGENTS.md
+
+**NeithLoom** — PySide6 desktop app. Converts images (JPG/PNG) to Brother embroidery files (`.PES`, `.DST`) via palette reduction + vector stitch generation.
+
+## Commands
+
+No `requirements.txt`, `pyproject.toml`, `pytest.ini`, or linter/typechecker config exists. Do **not** invent `pytest`/`ruff`/`mypy` commands. The only interpreter is the local venv:
+
+```powershell
+.\venv\Scripts\python.exe main.py                                  # run the app
+.\venv\Scripts\python.exe scripts\verify_pes.py "file.pes"         # REGRESSION GATE (see below)
+.\venv\Scripts\python.exe scripts\check_export_order.py [imagen] [density]  # GATE: DST y PES bordan los bloques de color en el mismo orden (exit 1 si no)
+.\venv\Scripts\python.exe scripts\diagnose_trim_cuts.py            # routing/trim diagnosis (defaults to Free_Fire_Logo.jpg)
+.\venv\Scripts\python.exe scripts\make_test_pes.py out.pes         # synthetic two-zone TRIM fixture
+.\venv\Scripts\python.exe scripts\benchmark_region_fill.py        # scripts\benchmark_*.py = throwaway diagnostics, seed 42, write scripts\bench_*.pes
+.\venv\Scripts\python.exe scripts\measure_resources.py [imagen]   # drives the whole GUI with the heaviest options, writes logs\recursos_*.csv + scripts\bench_recursos.pes
+.\venv\Scripts\python.exe analizar_pes.py --referencias referencias --generadas generadas --salida salida
+```
+
+There are **no unit tests**. Verification = `scripts/verify_pes.py` (exit 1 = a long jump has no nearby TRIM) plus sewing the design on a real machine.
+
+Installed deps (`venv`): `PySide6`, `pillow`, `numpy`, `scipy`, **`opencv-python-headless`** (not `opencv-python`), `pyembroidery` (used by `pes_exporter` for binary layout parity and by `verify_pes.py`), `psutil` (only for `core/resource_logger.py`).
+
+## Architecture
+
+- `main.py` → `ui.main_window.MainWindow`.
+- `ui/main_window.py` (2400 lines) is a **4-step wizard**, not a single screen: `STEP_TITLES = ("Elegir imagen", "Ajustar", "Generar bordado", "Guardar")`, one `QStackedWidget` page per step. Body is `QHBoxLayout`: **step controls on the LEFT, `PickImageLabel` preview on the RIGHT** and shared across all steps (it is a sibling of the stack, not inside a page). Gallery lives inside step 0 only.
+- Step 2 handlers: `process_image`, `_on_max_colors_changed`, `_start_pick_background`, `_start_recolor`, `_start_remove`, `change_density`, `_apply_hoop` (every hoop change goes through it: card clicks AND custom-size edits). Step 3: `generate_stitches`. Step 4: `export_image`.
+- `core/`: `image_loader` (load/EXIF/`MAX_DIMENSION=1000`/gallery), `color_processor` (K-means + nearest Brother thread), `stitch_generator` (the engine, 2387 lines), `hoops`, `threads` (130-thread catalog), `trim_zones` (busy-zone detection), `mockup` (low-res silhouette used to decide whether a jump may stay sewn), `resource_logger` (RAM/CPU sampler wrapped around `generate_stitches`, one CSV per call in `logs/`), `exporters/{pes,dst}_exporter` + `pec_palette`.
+- `scripts/` = diagnostics. `referencias/` = external commercial `.PES` treated as good baseline, `generadas/` + `salida/` = `analizar_pes.py` output. **`salida/` and `generadas/` are never written by the app** — the UI only exports to a user-chosen folder (`~/Downloads`, `~/Pictures`, a USB drive, or a picked dir).
+- QSettings: exactly two keys, `gui/guia_zonas` and `gui/last_save_dir`, both via a **bare `QSettings()`** (no org/app args → Windows registry). Nothing else is persisted.
+
+## Traps an agent would hit
+
+- **`min_area_mm2=None` disables the tiny-region filter in the app.** `StitchWorker` defaults it to `None` (ui/main_window.py:803) and `MainWindow` never overrides it; `_drop_tiny_regions` returns early when the value is `None`/`<=0`, so `MIN_REGION_AREA_MM2 = 0.5` is *not* in effect. Same for `codes_median` (despeckle off) and `connect_mm` (always `None`; `CONNECT_NO_TRIM_MM = None`). Docstrings claiming these are the GUI defaults are wrong.
+- **A non-`None` `background_mask` disables corner background detection.** `build_color_codes` branches `background_rgb` → `elif background_mask is not None` → `else: corner detect`, then ORs the mask back in. So one "Eliminar zona" click silently turns off auto-background. Background mask is only removed from stitching, never from the design.
+- **Two per-color masks with different authority.** `solid_masks` (5×5 `binary_dilation`) gates whether a bridge may stay down; `own_masks` (undilated `codes == c`) gates `_segment_off_color` / `OFF_COLOR_MAX_MM = 1.5`. "Own/off-color" includes **background**, not just other colors. Raising these thresholds reintroduces thread bridges across holes — the bug this project exists to avoid.
+- **Two trims, two meanings.** `TRIM_SENTINEL=-2` from `_route_one_color` means the segment leaves the color's solid mask (real hole/counter) → the exporter **always** cuts. `JUMP_SENTINEL=-1` is distance-based only, cut when > `TRIM_MIN_JUMP_DISTANCE_MM = 6.0` (pes_exporter.py:33). Sentinel values are **ints**; thread codes are **strings** like `'001'`.
+- **The DST's stop-code order is guaranteed equal to the PES's CSewSeg sections only since `export_dst` regroups with `group_stitches_by_color`** (dst_exporter.py:167). The stream from `_vector_fill_regionwise` is already contiguous per color (sorted thread codes), so for real designs the regroup is a no-op (byte-identical output); it only matters for hand-built non-contiguous streams. Verified by `scripts/check_export_order.py`. **The DST does NOT scale to the safe area** (130×180 max / 125×175 safe) the way `export_pes` does: a raw 160 mm-wide design fits in the PES but exceeds the DST machine area.
+- **pyembroidery's PES read is not trustworthy for geometry.** Its decoded PES CSewSeg sections come back re-shifted/refolded relative to the source design (observed with Free_Fire_Logo: normalized block centers fail at every index), while its DST read is faithful. Gate scripts must compare the DST (raw mm) against the source stream directly, never decode-compare PES geometry. Decoded command values: `STITCH=0`, `JUMP=1`, `TRIM=2`, `STOP=4`, `END=5` — `pyembroidery.COLOR_CHANGE` equals `5` and matches the STOP records in both PES and DST reads; `pyembroidery.END` equals `4`.
+- **Worker handles are cleared in the `finished` slot, not `done`.** `done` and `finished` are both queued FIFO, so `_on_stitch_done` runs while `_stitch_thread` is still set. The guide-change regeneration after `ZonesDialog` works only because `dialog.exec()` spins a **nested event loop** that drains the pending `finished` event. Replace it with a non-nested call and regeneration silently becomes a no-op.
+- **State prerequisites:** `_processed_image`/`_processed_result` exist only after "Ver los colores de hilo", so all three eyedropper modes no-op before that. `change_density` silently returns if no pattern exists (it re-runs full generation anyway). The three eyedropper modes are mutually exclusive. `load_image` and `_on_process_done` both wipe `_background_rgb`/`_background_mask`.
+- **Density default in the UI is `"Baja"`** (index 0 of `DENSITY_OPTIONS`), not `generate_stitches`' `"Media"` default.
+- **`process_image(in_place=...)` is a parameter, not extra state.** The "Ver los colores de hilo" button's `clicked` passes `checked=False`; the "Máximo de colores" combo passes `True` so reprocessing after a color-count change stays on step "Ajustar" (otherwise `_on_process_done` auto-advances to step 3). Both fields of the Personalizado card are `QDoubleSpinBox` **cm** while `HOOPS` is **mm**; the valid range `hoops.MIN_CUSTOM_CM..MAX_CUSTOM_CM` is derived from the catalog (10–30 cm → don't hardcode). The spinboxes use `setRange(0,100)` + `setKeyboardTracking(False)` on purpose: out-of-range values must reach `_validate_custom_size` so the red message shows. Hidden fields' `valueChanged` is ignored via the `self._hoop.get("custom")` guard.
+- **Legacy scanline functions are intentionally kept alive**: `_tatami_fill`, `_fill_region_tatami`, `_outline_stitches`, `_rotate_comp_mask` are unused by `generate_stitches` but the `scripts/benchmark_*.py` scripts import them. Don't delete them as dead code.
+- **The gallery panels must be added to `_gallery_layout`, not just created.** `QGroupBox` has no parent until `addWidget`, so building it and populating its grid leaves it invisible: `_gallery_sections` still lists it and `GalleryWorker` still fills its icons, so "items exist" checks pass while the column stays blank. Verify with `group.isVisible()`, never with `len(_gallery_sections)` or `grid.count()`.
+- **Gallery grids are `ThumbnailGrid`, not plain `QListWidget`.** `QListWidget.sizeHint()` is a fixed (256, 192) that ignores items, so inside a layout the height is whatever the layout hands out — one visible row, the rest behind a miniature scrollbar. `ThumbnailGrid` derives height from the content and disables its own vertical scrollbar so the surrounding `QScrollArea` scrolls the whole column.
+- **Truncating gallery labels by character count is wrong here.** `short_name(name, metrics, max_px)` elides to *pixels* against `THUMB_GRID_CELL_W`; 18 characters measured 216 px in a 152 px cell. Don't reintroduce a char limit. Thumbnails are generated at `THUMB_GRID_ICON` (the painted size), not `image_loader.THUMB_SIZE`, to avoid upscaling blur.
+- **Never call `setUniformItemSizes(True)` on a gallery grid.** It freezes the cell size to whatever the *first* item measured, and items are added before `GalleryWorker` delivers icons, so that size is a single text line: 12 px. Setting icons later does not recompute it, so each cell stays a 12 px strip and almost all of the thumbnail is a dead zone. Both `ResizeMode.Adjust` and `Fixed` and `setGridSize` fail to recover it; only dropping `setUniformItemSizes` does. Diagnose with `grid.visualItemRect(grid.item(0))`; a height near 12 means this bug is back.
+- **Gallery grids need `FixedCellDelegate` or part of every thumbnail stays dead.** The stock delegate returns the *text width* as the cell size, so cells come out 152 px wide for a long filename and 138 px for a short one. Columns stop lining up, `indexAt()` returns an invalid index inside the resulting holes, and the click does nothing there — 21% of the grid surface measured as unselectable. `FixedCellDelegate` pins every cell to `gridSize()` (measured 0.5%, and the residual is only the empty right margin). It also absorbs `spacing()`, so the real pitches are exactly `152` px across and `168` down — `_content_height()` must divide by the bare `gridSize().width()`, not `width + spacing()`, or it counts 3 columns instead of 4 and leaves hundreds of pixels of blank, unselectable space at the end of the group.
+- **Verifying gallery click targets: `QRect.right()` is inclusive.** Building a coverage set with `range(r.left(), r.right())` drops each cell's last column and invents a 1 px hole at x = 151, 303, 455, ... Use `range(r.left(), r.right() + 1)`, or the sweep reports phantom dead zones.
+- **`_load_gallery` must sort `pending` by mtime across all folders before starting the worker.** `list_recent_images` sorts per folder, so a folder-by-folder walk front-loads its slowest file: one 15012×5878 (88 MP) PNG took 895 ms alone and pushed the first visible thumbnail to 864 ms. A global `reverse=True` mtime sort puts the newest images first — measured first thumbnail 864 ms → **14 ms**.
+- **`_save_cards` and `_usb_cards` overlap.** `_make_save_card` always appends to `_save_cards`, but `_refresh_usb_cards` clears only `_usb_cards`, so USB cards live in both lists and `deleteLater()`-ed cards stay referenced forever. Both are iterated together in `_select_save_dir`/`_choose_other_folder`. Same for the dead `ExportWorker.export_formats` and write-only `self._busy_zones` — don't try to "fix" by wiring them up.
+- K-means is unseeded by default (`reduce_palette(rng=...)`); the UI never passes `rng`. Effective palette candidates are the **top 512 unique colors of a half-resolution copy** — `_KMEANS_SAMPLE = 20000` never binds.
+- `StitchWorker.progress` is declared and connected but **never emitted**.
+- USB cards accept only `DRIVE_REMOVABLE` (type 2), re-polled every 2 s via `GetLogicalDrives`; fixed and network drives are excluded.
+- Language convention is deliberate: **identifiers/signal names/Qt overrides are English, user-facing strings and most comments are Spanish.** Don't translate UI strings or rename identifiers. CamelCase Qt overrides (`addItem`, `sizeHint`) are intentional (marked `# noqa: N802`), and save cards get monkey-patched `card._path` / `card.mousePressEvent`.
+- **Every `generate_stitches()` call writes its own `logs/recursos_*.csv`** (`core/resource_logger.py`, 0.5 s sampling, always on, no flag to disable). psutil traps inside it: `cpu_percent(percpu=True)` keeps its baseline **per thread**, so warming it from `start()` makes the sampling thread's first row all `0.0` — warm it inside the sampling loop; and `Process.cpu_percent()` returns `0.0` on the first call **per Process instance**, so one instance must be reused for the whole run.
+- **Windows taskbar/Alt+Tab icon is set in `main.py`, not just via `app.setWindowIcon`**: `SetCurrentProcessExplicitAppUserModelID` before creating the window and `window.windowHandle().setIcon(...)` after `show()` (WM_SETICON) — otherwise the taskbar falls back to python.exe's generic icon. `images/icon.png` is generated by `scripts/make_icon.py` (transparent background, motif centered to 85% of the canvas); don't drop a white-background corner-anchored PNG back in there.
+
+## Docs: trust the code
+
+- `documentacion.txt` documents an **older 7-step single-screen UI** (button labels like "Procesar imagen" no longer exist) and quotes measurements taken with `connect_mm = 8.0`, which the app no longer passes. Constants in `core/stitch_generator.py` are the truth.
+- `explicacion_trim.txt` is **explicitly outdated** (says 3×3 dilation / 2.0 mm trim threshold; code uses 5×5 / 6.0 mm) — flagged in `documentacion.txt:510`.
+- Root scratch files (`fix2.py`, `fix_tmp.py`, `_snap.txt`, `analizar_pes.py`) are one-off debugging artifacts, not app code. `analizar_pes.py` is the only useful one.
+- Git: **no commits yet on `master`**, everything untracked. There is no history to diff against.
+
+## Design constraints (repo rule)
+
+Keep the UI as simple as possible; only add user-facing options when strictly necessary — otherwise hardcode a sensible default. Minimize computational resources (small K-means sample/iterations, 1000px cap, conservative morphology). Preserve existing behavior; don't add optional complexity without justification.
+
+## Verify before declaring done
+
+1. `.\venv\Scripts\python.exe scripts\verify_pes.py <generated.pes>` must exit 0 (`--trim-window` counts commands, not mm).
+2. `scripts\diagnose_trim_cuts.py` to confirm trim classification — `verify_pes.py` does **not** inspect routing.
+3. Confirm coordinates stay inside the hoop's usable area (PES: 130×180 mm max, 125×175 mm safe).

@@ -1,0 +1,17 @@
+un TRIM se inserta únicamente en el exportador PES cuando se cumplen estas condiciones:
+
+1. _route_one_color() decide levantar la aguja si:
+   - la distancia supera limit = max(1.0 mm, 1.8 × pitch), elevado por connect_mm si está configurado; o
+   - el segmento no está completamente dentro de la máscara sólida dilatada 3×3 del color.
+   Ver core/stitch_generator.py:1207-1249 y core/stitch_generator.py:1473-1479.
+
+2. Esa decisión genera un JUMP_SENTINEL.
+
+3. build_commands() lo convierte en TRIM solo si:
+   - ya existe algún comando previo —no cuenta el salto inicial desde la aguja en reposo—; y
+   - la distancia euclidiana del salto es estrictamente mayor de 2.0 mm (> 20 décimas de mm).
+   
+
+Por tanto, cruzar un hueco fuerza JUMP, pero no siempre TRIM: si el hueco mide 2.0 mm o menos, el exportador deja el hilo sin cortar. connect_mm=8 mm de la GUI solo evita que el enrutado genere el salto; no cambia el umbral fijo de TRIM de 2 mm.
+
+También hay un fallback: una puntada normal sin sentinel cuyo componente mayor supere 12.7 mm se divide en saltos y puede recibir TRIM (core/exporters/pes_exporter.py:184-196). DST no genera TRIM; solo JUMP y COLOR_CHANGE. El verificador considera error un salto largo posterior a coser sin un TRIM dentro de ±6 comandos

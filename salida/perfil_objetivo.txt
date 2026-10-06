@@ -1,0 +1,37 @@
+PERFIL OBJETIVO DE BUENA MATRIZ .PES
+============================================================
+Derivado de 6 referencia(s) externa(s) en referencias/.
+Fuente: archivos de digitalizadores comerciales (no generados por esta app).
+
+METRICA                          n     media    min      max
+------------------------------------------------------------
+puntadas                          6      6199      2403     12330
+trims                             6        14         0        73
+saltos                            6         6         1        12
+saltos con movimiento             6         6         1        12
+cambios de color                  6         3         0         6
+trims por 1000 puntadas           6      1.99      0.00      7.74
+saltos por 1000 puntadas          6      0.99      0.11      2.06
+largo medio de puntada (mm)       6      2.27      1.79      2.69
+
+Colores por diseno (referencias): min=1 max=7 media=4.0
+Tamano de diseno (referencias): ancho 55-96 mm, alto 21-113 mm
+
+CONTRASTE DE LAS GENERADAS POR ESTA APP
+------------------------------------------------------------
+  NeithLoom.pes
+    puntadas=4641 (DENTRO)
+    trims/1000=39.00 (POR ENCIMA)
+    jumps/1000=78.22 (POR ENCIMA)
+  NeithLoom_elefante.pes
+    puntadas=9473 (DENTRO)
+    trims/1000=5.07 (DENTRO)
+    jumps/1000=10.24 (POR ENCIMA)
+  NeithLoom_mcdonalds.pes
+    puntadas=6803 (DENTRO)
+    trims/1000=3.09 (DENTRO)
+    jumps/1000=6.47 (POR ENCIMA)
+
+Nota: trims por debajo del objetivo = se deja hilo colgando entre zonas;
+      jumps por encima = demasiados reposicionamientos (hilo y tiempo).
+      El largo medio de puntada es la palanca principal de calidad/velocidad.

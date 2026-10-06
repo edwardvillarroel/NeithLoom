@@ -1,0 +1,518 @@
+================================================================================
+SES HAT - DOCUMENTACION BREVE
+Bordado automatico desde imagen (jpg/png) a archivo de maquina .PES / .DST
+================================================================================
+
+Este texto describe tres cosas: COMO FUNCIONA, que LIMITACIONES tiene el
+proyecto y que TECNICAS se usaron. Los numeros citados son los valores reales
+del codigo; si se cambia una constante, hay que actualizar este archivo.
+
+
+================================================================================
+1. FUNCIONAMIENTO
+================================================================================
+
+1.1 QUE HACE
+------------
+Convierte una imagen cualquiera en un archivo de bordado listo para coser en
+una maquina Brother. El usuario no toca ni un solo parametro tecnico: elige
+una imagen y un bastidor, y el programa decide los colores, los hilos, el
+trazo y el formato.
+
+La ventana se titula "NeithLoom". Todo ocurre en una sola pantalla: galeria de
+imagenes a la izquierda, vista central, panel de controles a la derecha.
+
+
+1.2 EL FLUJO, PASO A PASO
+-------------------------
+Paso 1  Abrir imagen
+        Boton "Abrir imagen..." o clic en la galeria de la izquierda.
+        Se aceptan solo .jpg, .jpeg y .png.
+        La imagen se reduce al cargar: el lado mayor queda en 1000 px
+        (reescalado LANCZOS) y se corrige la rotacion EXIF de la camara.
+        Motivo: trabajar siempre sobre una imagen pequena (ver 3.2).
+
+Paso 2  Elegir el fondo (opcional)
+        Boton "Seleccionar fondo" y clic sobre el color que no se quiere
+        bordar. Ese color y sus tonos parecidos (tolerancia de +-25 por canal)
+        quedan fuera. Si el usuario no hace nada, el fondo se detecta solo
+        mirando las 4 esquinas de la imagen.
+
+Paso 3  Procesar los colores
+        Boton "Procesar imagen". Ocurre en dos sub-pasos:
+        3a) Se reduce la paleta a un maximo de colores (opciones 4/6/8/10/12,
+            8 por defecto) con un K-Means ligero.
+        3b) Cada color resultante se convierte al hilo real de Brother mas
+            parecido. El catalogo tiene 130 hilos. La app nunca inventa un
+            color: si no existe en el carrete, elige el mas proximo.
+
+Paso 4  Generar las puntadas
+        Boton "Generar puntadas". Se elige la densidad (Baja / Media / Alta) y
+        el tamano de bastidor. La imagen se escala proporcionalmente, sin
+        deformarla, para que quepa dentro del bastidor. El default es el
+        bastidor Brother de 13 x 18 cm.
+
+Paso 5  Revisar la vista previa
+        Se dibuja una simulacion del bordado dentro del bastidor elegido.
+
+Paso 6  Editar (opcional)
+        Boton "Cambiar color de zona": clic en una zona y se elige otro hilo
+        del catalogo. La app vuelve a generar las puntadas sola.
+        Boton "Eliminar zona": clic en una zona y deja de bordarse.
+        Boton "Cambiar densidad": reaplica la densidad a las puntadas ya
+        generadas. Cualquier edicion regenera el bordado automaticamente.
+
+Paso 7  Exportar
+        Se elige .PES (default) o .DST y se guarda el archivo. Ese archivo es
+        el que se lleva a la maquina de bordar.
+
+
+1.3 LA CADENA INTERNA
+--------------------
+Todo el trabajo pesado corre en un hilo aparte (QThread) para que la ventana
+nunca se congele. Son 4 hilos independientes:
+
+    image_loader.load_resized
+        -> color_processor.reduce_palette      (K-Means)
+        -> color_processor.map_to_threads     (color -> hilo Brother)
+        -> stitch_generator.generate_stitches (vectorizacion + relleno)
+        -> core.exporters.pes_exporter / dst_exporter
+
+Formato de la lista de puntadas: tuplas (x_mm, y_mm, codigo_de_hilo). Las
+coordenadas van en milimetros. Un codigo de hilo negativo es un movimiento con
+aguja arriba, no una puntada real:
+
+    JUMP_SENTINEL = -1   salto sin cortar el hilo
+    TRIM_SENTINEL = -2   salto que obliga a cortar el hilo antes
+    MOVE_SENTINELS = (-1, -2)
+
+
+================================================================================
+2. LIMITACIONES TECNICAS
+================================================================================
+
+2.1 LIMITACIONES DE INTERFAZ (UX AL EXTREMO)
+---------------------------------------------
+El criterio de diseno fue: que lo use alguien que no sabe de computers. Eso
+se traduce en decisiones concretas, no solo enuntar:
+
+  - Una sola ventana, sin menus, sin wizards, sin arboles, sin solapas.
+  - Solo 3 decisiones del usuario: cuantos colores, que densidad, que
+    bastidor. Todo lo demas ya viene con un valor por defecto que ya funciona.
+  - Palabras sin jerga tecnica. "Baja / Media / Alta" en vez de "densidad
+    0.28 mm". "Maximo de colores" en vez de "K". "Suavizar ruido JPEG" en vez
+    de "despeckle por mediana".
+  - Boton "Guia de uso" con los 7 pasos en castellano, para quien nunca ha
+    usado una maquina de bordar digital.
+  - La galeria de la izquierda ya trae las ultimas 100 imagenes del equipo
+    ordenadas por fecha. El caso mas comun (una foto recien hecha) ya esta a
+    un clic, sin ir a buscar el archivo.
+  - Todo el estado de la app cabe en una unica etiqueta de texto ("Listo",
+    "Procesando...", "Generando puntadas..."). Sin ventanas intermedias.
+  - Los botones se activan solos segun toca: no se puede pulsar "Generar
+    puntadas" sin haber procesado la imagen antes.
+  - Al cambiar el fondo, un color o el bastidor, las puntadas se regeneran
+    solas con un pequeno retardo. El usuario no decide hay que volver a
+    generar.
+
+Lo que NO existe a proposito, para no exponer al usuario a decisiones tecnicas:
+
+  - No hay control de longitud de puntada, angulo de relleno, tension,
+    tipo de puntada,Correcciones, holgura ni parametros de maquina.
+  - No hay estilos de bordado, ni capas, ni tamanos de fuente, ni texto.
+  - No hay historial / deshacer, ni guardar proyecto, ni ajustes.
+  - No hay ayuda contextual dentro de la app ni mensajes de error con codigo.
+
+
+2.2 LIMITACIONES TECNICAS REALES
+---------------------------------
+  - Solo se lee .jpg, .jpeg y .png. No hay PDF, SVG, HEIC ni BMP. La
+    transparencia (canal alfa) se pierde: todo se convierte a RGB.
+  - La imagen de trabajo se limita a 1000 px de lado mayor. En fotos grandes
+    se pierde el detalle fino de letras o trazos delgados.
+  - Solo 2 formatos de salida: PES y DST. No hay JEF, EXP, VP, SEW, ni
+   UFF. Cada uno es un formato binario distinto que habria que escribir a
+    mano.
+  - Solo hilos Brother (130 en el catalogo). No hay marcas de hilo ajenas.
+  - Una sola bobina por color: todos los bloques de un mismo color van juntos
+    y en un solo tramo. No hay Escalonado de bobinas ni cambios de color
+    intermedios dentro de una region.
+  - Solo Brother en el catalogo de bastidores, y por ahora solo el area util
+    de 13 x 18 cm es la que se exporta con margen de seguridad (125 x 175 mm
+    dentro de los 130 x 180 mm de la maquina). El exportador DST no aplica
+    ese margen.
+  - Un solo bastidor por archivo. No hay composicion en varios bastidores ni
+    multipieza.
+  - La vista previa es una simulacion 2D: no simula la tela, el relieves ni
+    el desgaste de la maquina.
+  - OJO: la vista previa une visualmente puntadas que el archivo real corta.
+    Que en pantalla se vea continuo NO demuestra que en la maquina el hilo
+    quede bien. La unica prueba es coser el diseño.
+  - El suavizado de ruido JPEG esta DESACTIVADO a proposito, porque elimina
+    fragmentos del diseño (no solo los limpia). Esta en la interfaz como
+    opcion, y usarla cambia lo que se borda.
+  - El valor "piso de continuidad" (8 mm por defecto) sube en exceso puede
+    crear puentes de hilo sobre huecos reales. Los cruces de fondo, huecos y
+    contadores de letra SIEMPRE cortan, pero el resto hay que validarlo en la
+    maquina, subiendo el valor de a poco.
+  - NUEVO: el modo automatico (core/mockup.py) permite seguir con la aguja
+    abajo por un vacio de hasta 2 mm cuando una silueta simplificada del
+    propio diseño dice que ese vacio es redondeo de borde y no separacion real.
+    El unico hueco real (contador de letra) queda protegido por la jerarquia de
+    contornos y SIEMPRE corta, pero un puente de 2 mm sobre una letra muy
+    pequena se nota si se mira de cerca. La opcion "simplificar esas zonas"
+    sube el umbral a 3 mm y es la que hay que probar en maquina antes de
+    usarla en un encargo. El modo por defecto solo quita lo que a simple vista
+    no se ve, y en un diseño limpio no cambia ni un punto.
+  - Sin tests automaticos, sin lint, sin control de versiones de codigo, sin
+    CI. La verificacion es el script de diagnostico scripts\verify_pes.py
+    (necesita pyembroidery, que la app no usa) y la prueba a maquina.
+  - Sin soporte de otras maquinas que no sean Brother. El formato PES esta
+    reescrito a mano replicando la estructura de pyembroidery; si cambia el
+    formato, hay que mantener el escritor al dia.
+
+
+2.3 LIMITACIONES DE LA IMPLEMENTACION
+--------------------------------------
+  - El catalogo de hilos y el de bastidores estan escritos a mano en el
+    codigo (core/threads.py, core/hoops.py). No se leen de un archivo de
+    la maquina, asi que un hilo nuevo hay que anadirlo al codigo.
+  - El fondo se detecta por las 4 esquinas. En una imagen con fondo
+    degradado o con el objeto tocando el borde, esa deteccion falla y hay
+    que seleccionarlo a mano.
+  - El recorte de zonas usa el color exacto del plano ya procesado. Dos zonas
+    distintas que hayan acabado con el mismo hilo se editan a la vez.
+  - La reduccion de paleta es aleatoria si no se le pasa una semilla. Dos
+    ejecuciones del mismo diseño pueden dar paletas ligeramente distintas.
+    Para reproducir un resultado hay que pasarle el parametro rng.
+
+
+================================================================================
+3. TECNICAS UTILIZADAS
+================================================================================
+
+3.1 TECNICAS DE IMAGEN Y COLOR
+------------------------------
+- Reduccion de paleta por K-Means ligero, a medida:
+    Se baja la imagen a la mitad de resolucion, se cuentan los pixeles y se
+    quedan solo los 512 colores mas frecuentes. El K-Means corre sobre esos
+    512, con 6 iteraciones como maximo y una muestra de 20 000 pixeles como
+    maximo. Asi el coste no depende del tamano de la foto.
+    La asignacion final de cada pixel a su color mas proximo se hace
+    vectorizada con NumPy, recorriendo la paleta y guardando la minima
+    distancia. El calculo de distancias dentro del K-Means usa np.einsum para
+    no crear una matriz 3D de diferencias.
+
+- Cuantizacion a un catalogo real de hilos:
+    Cada color reducido se busca al hilo Brother mas cercano por distancia
+    euclidiana en RGB. Antes de buscar, np.unique agrupa los pixeles por
+    color, con lo que se hace UNA busqueda por color unico en lugar de una
+    por pixel. Se guardan tambien los diccionarios code->RGB y
+    code->nombre para que la interfaz pueda mostrarlos.
+
+- Fondo por acuerdo de esquinas:
+    Se toman las 4 esquinas de la imagen y gana el color que mas se repite.
+    Si el usuario elige fondo a mano, se aplica una tolerancia de +-25 en
+    cada canal RGB, de forma que se eliminan tambien los tonos cercanos.
+
+- Limpieza morfologica (SciPy ndimage):
+    Un cierre (closing) morfologico de 3x3 pixeles por color, que tapa los
+    huecos de 1-2 pixeles que deja el anti-aliasing sin unir islas reales de
+    la forma (no toca ojos ni letras separadas).
+
+- Despeckle opcional:
+    Filtro de mediana 5x5 sobre el plano de codigos de hilo. Quita el ruido
+    de bloques que deja un JPEG comprimido. Va desactivado porque a
+    diferencia de la limpieza morfologica, este SI borra partes del diseño.
+
+- Filtro de tamano minimo de region:
+    Se descartan del relleno las regiones de menos de 0.5 mm2. El umbral se
+    mide en milimetros cuadrados y no en pixeles, para que el resultado no
+    cambie con la resolucion de la imagen. Sirve para que las motas de ruido
+    no se borden, porque cada una costaba un corte de hilo.
+    SALVEDAD: un color NUNCA se borra entero. La region mas grande de cada
+    color se conserva aunque este por debajo del umbral. Sin esa salvaguarda un
+    color claro que la reduccion de paleta deja fragmentado en motas -- un
+    turquesa de borde, un gris claro anti-aliaseado -- desaparece del bordado
+    entero y el usuario ve un area grande sin rellenar, cuando lo que se ha
+    descartado es el ruido que la rodeaba. Descartar el ruido que SI rodea a una
+    zona real es lo que hace este filtro; borrar el color entero es un cambio
+    de diseno, y para eso esta el despeckle, que ademas es optativo.
+    Medido en los tres logos de prueba, ningun color se borra entero tras la
+    salvaguarda y el coste es de +1 corte en McDonalds: los tres naranjas de su
+    anti-aliasing (255,153,0)/(255,102,0)/(255,36,0) pasan de 0 a 11/14/4 pixeles.
+
+
+3.2 TECNICAS DE AHORRO DE RECURSOS
+-----------------------------------
+Estas son las palancas que hacen que la app corra en equipos modestos:
+
+- Nunca se trabaja con la imagen original: se limita a 1000 px al cargar.
+- Miniaturas sin decodificar la imagen entera: se usa el modo draft de PIL,
+  que en JPEG lee a baja resolucion. Cuesta una fraccion.
+- La galeria se limita a 100 imagenes y se construye en un hilo aparte.
+- El K-Means se hace sobre 512 colores y 20 000 pixeles como maximo, no
+  sobre la imagen completa.
+- PUNTADAS LARGAS A LO LARGO DEL TRAMO (la palanca mas importante):
+    En vez de pinchazo denso de 0.3 mm, se usan puntadas de 3.0 mm dentro de
+    cada fila de relleno. La hebra recorre el tramo entera de forma continua
+    (aguja abajo), asi que la COBERTURA de hilo es la misma pero el numero de
+    pinchazos cae de forma muy grande. Menos pinchazos significa menos tiempo
+    de maquina, menos roturas de hilo y menos desgaste. La separacion ENTRE
+    filas la sigue mandando la densidad.
+- Filtro de 0.5 mm2: elimina de entrada las motas que generaban un corte de
+    hilo cada una. Menos TRIM = menos cambios de bobina = menos paradas.
+- Contornos simplificados: approxPolyDP con 0.30 mm de tolerancia y una sola
+    pasada de suavizado Chaikin. Menos nodos y menos segmentos pequenos.
+- 4 hilos QThread: el trabajo pesado (procesar, generar puntadas, exportar,
+    miniaturas) nunca corre en el hilo de la interfaz, asi que la ventana
+    sigue respondiendo. Ademas se puede cancelar.
+- La vista previa se dibuja a 2 pixeles por milimetro, no a la resolucion
+    final: es una simulacion, no una medida.
+- Sin GPU, sin modelos de inteligencia artificial, sin red y sin servicios.
+    Las unicas dependencias son PySide6, NumPy, Pillow, SciPy y OpenCV
+    (version headless). No hay nada que se ejecute en un servidor ni nada que
+    pese cientos de MB.
+
+
+3.3 MOTOR DE BORDADO: LA PARTE MAS IMPORTANTE
+----------------------------------------------
+El relleno NO es un simple scanline de pixeles. El motor es vectorial y
+trabaja por regiones, asi que la cobertura es homogenea y los bordes no salen
+escalonados.
+
+a) Vectorizacion y jerarquia de contornos
+    Se usa cv2.findContours con RETR_TREE, que devuelve no solo los contornos
+    sino la relacion padre-hijo entre ellos. Recorriendo esa cadena se
+    obtiene la PROFUNDIDAD de cada contorno:
+        - profundidad PAR  -> area bordable
+        - profundidad IMPAR -> hueco (el contador de una letra, un agujero)
+        - un PAR dentro de un IMPAR -> isla del mismo color (el punto de una Q)
+    La mascara de relleno se construye con la regla par-impar: cada anillo se
+    rasteriza con cv2.fillPoly en una capa limpia y luego se suma. Importante:
+    fillPoly ASIGNA, no acumula, asi que pintar el anillo exterior en la misma
+    capa que su hueco volveria a rellenar el hueco. Por eso cada anillo va en
+    su propia capa.
+
+b) Tres pasadas por region, en este orden
+    1. Contorno: running stitch sobre el borde exterior Y sobre el borde de
+       los huecos, muestreado a 1.2 mm. El borde del hueco se cose sin
+       rellenar su interior, para que el contador quede bien definido.
+    2. Underlay ligero: un edge-run sobre la silueta erosionada 0.7 mm hacia
+       dentro, muestreado a 2.5 mm. Al ir sobre la silueta EROSIONADA, nunca
+       toca el borde con anti-aliasing. Es un unico borde interior punteado,
+       suficiente para estabilizar el borde sin gastar hilo de mas.
+    3. Relleno Tatami diagonal: filas paralelas a la diagonal de 45 grados, que
+       es la que usan los tatami profesionales (reparte mejor la tension y
+       evita que todas las filas queden paralelas al borde de la tela).
+       Cada fila sale de intersecciones EXACTAS con el poligono, con la regla
+       par-impar, asi que la puntada llega justo al borde y no deja la franja
+       sin coser que dejaba el scanline de pixeles. Las filas pares e impares
+       alternan medio paso (offset tatami) para tapar los huecos entre ellas.
+
+c) Enrutado: cuando se levanta la aguja
+    Tras vectorizar, las puntadas se agrupan por color (una sola prueba de
+    hilo por color) y las regiones se ordenan por centroide con
+    vecino-mas-cercano, sin fusionarlas. Despues se recorre en zigzag para
+    que la aguja viaje lo menos posible.
+
+    ORDEN DE RECORRIDO DENTRO DE UNA REGION: por CALLE, luego por fila.
+    Cada fila del relleno tatami se parte en tramos y a cada tramo se le asigna
+    un numero de calle estable (`_assign_fill_strips`): el tramo hereda el
+    numero de su predecesor en la fila anterior mientras solape con el, y si
+    no, toma el siguiente libre. La rowkey pasa a ser
+    `(region, etapa, (calle, fila))` y `_rowkey_sort` ordena por
+    `(region, etapa, calle, fila)`. Se recorre TODA la columna de una calle
+    antes de pasar a la siguiente.
+        Antes se ordenaba por fila, y eso obligaba a abandonar la banda en
+    cada fila para volver a ella en la siguiente: un cambio de aguja por fila.
+    Con calle primero hay UN cambio de aguja por columna, y una columna son
+    decenas de puntadas. Medido a 130x180 mm, Media, `connect_mm` 8.0:
+        Elefante  ->  de 22 a 1 de salto por region grande; el cuerpo azul
+                     queda en UNA cadena continua de 5867 puntadas (62% del
+                     diseño) y el exportador baja de 278 a 48 cortes.
+        NeithLoom    ->  de 240 a 182 cambios de aguja; 216 -> 181 cortes.
+    El numero de columnas es tambien la cota inferior de cortes: 38 regiones de
+    lettering dan 126 columnas y ~125 cambios de aguja, que es lo que se mide.
+        `_assign_fill_strips` NO reparte las filas de forma que cada calle
+    arrastre solo filas alternas; el reparto es puramente geométrico y su unico
+    objetivo es que dos tramos de filas consecutivas que se tocan conserven el
+    mismo numero.
+
+    La aguja se mantiene ABAJO (se cose continuo) solo si se cumplen las CUATRO
+    condiciones a la vez:
+        1. la distancia no supera el umbral (adaptativo: 1.8 x el paso de la
+           fila, con un piso de 1.0 mm, o el "piso de continuidad" elegido);
+        2. el segmento entero cae dentro de la mascara solida del color,
+           que es la mascara real dilatada 5x5;
+        3. el segmento no entra en la barrera de huecos;
+        4. el segmento no cruza OTRO color ni el fondo.
+
+    La condicion 4 usa `own_mask`, la mascara del color SIN dilatar, que es la
+    autoridad real sobre `solid_mask`. Sin ella la dilatacion 5x5 daba por
+    bueno cruzar separaciones de hasta 4 px: el hilo quedaba unido entre los
+    dos arcos de una "M" o entre el cuerpo y una pata, tendido sobre un hilo ya
+    cosido. Se tolera una racha de `OFF_COLOR_MAX_MM = 1.5 mm` de pixeles
+    ajenos porque el relleno se cose pegado al contorno y su enganche siempre
+    toca el borde; con tolerancia 0 el relleno se fragmentaba en cada borde.
+    Medido con la tolerancia de 1.5 mm, la racha ajena maxima con la aguja abajo
+    cae de 10-12 mm a 1.3 mm (McDonalds), 1.45 mm (Elefante) y 2.12 mm (NeithLoom).
+        La mascara de mockup (silueta de 160 px) NO puede ser autoridad aqui:
+    no distingue "otro color" de "fondo", asi que el puente por `bridge_gap_mm`
+    queda condicionado a `not off_color`. Un puente de la silueta nunca
+    puede pasar por encima de otro color.
+        Efecto secundario medido: con `OFF_COLOR_MAX_MM = 1.5` esa rama del
+    mockup es casi inalcanzable, porque si `off_color` es False la dilatacion
+    5x5 ya absorbe la racha y `solid` sale True por la via normal. Los
+    tres modos de guia dan el mismo resultado byte a byte en McDonalds y en el
+    elefante, y difieren en 1 puntada en NeithLoom. Antes recortaban un 13-36% de
+    los cortes; ahora ese recorte lo hace la comprobacion exacta. Para recuperar
+    ese margen hay que SUBIR `OFF_COLOR_MAX_MM`, nunca quitar el `and not
+    off_color`, que es lo que impediria tender hilo sobre hilo cosido.
+
+    Si el tramo se descarta por cruzar el interior de un contador/hueco o por
+    cruzar otro color o el fondo, la aguja se levanta con TRIM_SENTINEL, que el
+    exportador SIEMPRE corta sin mirar la distancia: un cruce de hueco no
+    depende de la distancia, y un salto por encima de una zona ya cosida tampoco
+    (un salto de 3 mm sobre hilo cosido deja el hilo tendido ahi igual). Por eso
+    la regla de los 6 mm del exportador no alcanza para estos dos casos.
+        El coste medido de cortar tambien los cruces de color: McDonalds sube
+    de 1 a 21 cortes (0.15 -> 3.09 por 1000) porque antes devolvia un numero
+    falsamente bueno, conseguido cosiendo a traves de los arcos amarillos;
+    Elefante y NeithLoom, que son los disenos con zonas grandes, bajan. Los tres
+    siguen dentro del perfil de las referencias comerciales (media 1.99, maximo
+    7.74 por 1000).
+    Si lo que se cruza es FONDO entre dos zonas separadas del mismo color y no
+    hay ningun otro color de por medio, la aguja se levanta con JUMP_SENTINEL y
+    el exportador decide el corte por distancia (TRIM solo si el salto supera
+    TRIM_MIN_JUMP_DISTANCE_MM = 6 mm). Un salto sobre fondo vacio no obliga a
+    cortar la hebra, y forzar un TRIM por cada transicion era la mayor fuente
+    de trims/1000 frente al perfil de referencia.
+    La regla de distancia no se aplica al paso entre dos puntos de una MISMA
+    componente (misma `region` de la rowkey): mientras el segmento quede
+    dentro de la mascara de esa region, se cose continuo aunque la distancia
+    supere el umbral. Cubre las tres pasadas (contorno/underlay/relleno) y
+    tambien fila a fila del relleno y anillo a anillo del contorno.
+    La mascara dilatada 5x5 puede hacer que un hueco estrecho parezca solido,
+    por eso la jerarquia de contornos manda: el interior de un hueco es
+    infranqueable aunque la mascara dilatada lo permita.
+
+    NUEVO: silueta de baja resolucion como cuarta autoridad (core/mockup.py).
+    Cuando el tramo ya esta descartado por cruzar fondo, se consulta una
+    silueta binaria del mismo diseño reducida a 160 px de lado largo y
+    suavizada (opening+closing de 3 px). Si entre los dos puntos hay MENOS
+    vacio del que mide `bridge_gap_mm`, ese vacio no es separacion real sino
+    el redondeo de una esquina, y el hilo sigue con la aguja abajo. El umbral
+    se calibra contra la propia resolucion de la silueta, no contra un numero
+    redondo: a 1.56 mm/px, 2.0 mm es ~1.3 px, el tamaño del error de
+    discretizacion.
+      - faithful (0.0 mm): no se construye la silueta, comportamiento original.
+      - auto (2.0 mm, por defecto): quita solo redondeo.
+      - simple (3.0 mm): sube el umbral; puede cambiar el dibujo.
+    Medido sobre los logos de prueba: de los saltos de mas de 6 mm (los
+    unicos que el exportador corta), 232 de 1747 en el de texto y 136 de 377
+    en el otro cruzan menos de 2 mm de vacio. Los de 6-12 mm (47% y 42%) son
+    separacion real y NO se tocan: seguir ahi seria coser sobre el fondo.
+    Un hueco real nunca se puentea: el criterio de la jerarquia de contornos
+    siempre gana. La silueta se construye una vez por diseño, se descarta y
+    no se guarda en el patron ni en ningun cache.
+    En un diseño limpio no hay ni un tramo que cruce vacio, asi que los tres
+    modos dan el mismo resultado byte a byte (verificado con circulo, barra
+    y dos bloques: comando identico y vista previa identica).
+
+d) Protección de los huecos
+    La mascara de huecos se erosiona 1 px antes de usarse como barrera. El
+    motivo es concreto: el running stitch del borde del hueco se cose
+    JUSTO sobre el contorno, asi que sin ese margen cada puntada del contador
+    se detectaria como cruce de hueco y se cortaria el hilo sin parar. Con 1
+    px el interior real del hueco sigue prohibido.
+
+e) Islotes del mismo color
+    Cuando ya se han visited todas las regiones, a las barreras de hueco se
+    les resta la mascara solida del propio color. Asi el punto de una Q, que
+    esta dentro del hueco de otra region pero es del mismo color, no se
+    trata como zona prohibida.
+
+f) Eliminacion de micro-saltos
+    Una puntada larga cuyo tramo supere 12.7 mm se parte en varias. El
+    verificador de PES considera ERROR un salto largo hecho despues de coser
+    sin un TRIM cerca (dentro de 6 comandos).
+
+
+3.4 EXPORTADORES: ESCRITURA MANUAL DE FORMATOS BINARIOS
+---------------------------------------------------------
+No se usa ninguna libreria de bordado en tiempo de ejecucion. Los dos
+escritores estan hechos a mano, byte a byte.
+
+DST (Tajima)
+    - Cabecera de 512 bytes con nombre y etiqueta de la maquina.
+    - Cada punto es un registro de 3 bytes. Los desplazamientos van en decimas
+      de milimetro (se multiplica por 10) y se codifican por bits con los
+      valores +1, +3, +9, +27, +81 por eje, repartiendo entre los tres bytes
+      segun el signo y la magnitud. El eje Y se invierte porque en DST crece
+      hacia arriba.
+    - Comandos: puntada, salto, cambio de color y fin. Un salto largo se
+      parte en varios registros (maximo 121 decimas, 12.1 mm, por registro).
+    - LIMITACION TECNICA: DST no distingue un salto de un corte. Los dos
+      centinelas se escriben como JUMP, porque el formato no tiene TRIM.
+      Quien exporte a DST pierde la orden de cortar.
+
+PES v1 (Brother)
+    - Cabecera binaria con la firma #PES0001 y los bloques CEmbOne y CSewSeg.
+    - Bloque PEC con la paleta de colores y las puntadas comprimidas; los
+      colores se agrupan en una paleta unica para no repetir entradas.
+    - El diseño se escala y se traslada para caber en la ZONA DE SEGURIDAD de
+      125 x 175 mm, dentro del area util de 130 x 180 mm de la maquina. El
+      margen extra evita rechazos por tolerancias de la maquina.
+    - Codigos de comando: salto 0b00010000, corte (TRIM) 0b00100000.
+    - Se escribe TRIM para cada TRIM_SENTINEL y tambien para cada salto de
+      mas de 6.0 mm. Excepcion conocida: si el movimiento es el primer comando
+      (posicionado inicial), no se escribe TRIM, porque la maquina ya esta en
+      reposo con la aguja arriba.
+    - Una puntada normal con un tramo de mas de 12.7 mm se parte en saltos.
+
+
+================================================================================
+4. COMO VERIFICAR UN CAMBIO
+================================================================================
+No hay tests automaticos. La verificacion se hace asi:
+
+1. Arrancar la app y procesar una imagen de prueba.
+2. Comprobar el archivo generado con el diagnostico (desde bordado_automatico):
+
+       .\venv\Scripts\python.exe scripts\verify_pes.py "mi_diseno.pes" --threshold-mm 6.0 --trim-window 6
+
+   Codigo de salida 1 significa que hay un salto largo sin un TRIM cerca.
+   Ojo: el parametro --trim-window cuenta comandos, no milimetros.
+3. Comprobar el enrutado, que verify_pes.py NO mira. Al generar en memoria,
+   lo que hay que comparar entre versiones es:
+       - el numero de TRIM del exportador (saltos + TRIM_SENTINEL), por 1000
+         puntadas, contra el perfil de referencias (media 1.99, maximo 7.74);
+       - la RACHA maxima de pixeles de otro color recorrida con la aguja abajo.
+         Debe quedarse por debajo de OFF_COLOR_MAX_MM = 1.5 mm. Con la
+         mascara dilatada 5x5 como unica autoridad daba 10-12 mm.
+   Medido a 130x180 mm, Media, `connect_mm` 8.0, semilla 42:
+       diseno          antes   ahora   racha ajena antes -> ahora
+       McDonalds         1      21        (10 mm)  -> 1.30 mm
+       Elefante        278      48        (12 mm)  -> 1.45 mm
+       NeithLoom          216     181         (8 mm)  -> 2.12 mm
+   Los tres exportan con verify_pes.py codigo 0 y 0 saltos largos sin TRIM, y
+   todas las coordenadas caen dentro del area util de 130 x 180 mm.
+4. COSER el diseño en la maquina. Es el paso que ninguna comprobacion
+   automatica sustituye: ni la vista previa ni el verificador detectan un
+   puente de hilo sobre un hueco ni una tension incorrecta.
+
+Los scripts scripts\benchmark_*.py son herramientas de diagnostico
+descartables: procesan imagenes, usan la semilla 42 y escriben
+scripts\bench_*.pes. Sirven para comparar el numero de puntadas y de cortes
+de hilo entre versiones, no como linea base.
+
+ATENCION: explicacion_trim.txt esta DESACTUALIZADO. Describe una mascara
+dilatada 3x3 y un umbral de corte de 2.0 mm. El codigo actual usa la
+dilatacion 5x5 y TRIM_MIN_JUMP_DISTANCE_MM = 6.0 mm. Si se va a tocar el
+enrutado, leer el codigo y no ese archivo.
+
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================
