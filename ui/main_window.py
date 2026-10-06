@@ -102,7 +102,7 @@ LAST_SAVE_DIR_KEY = "gui/last_save_dir"
 DONATION_SUPPRESS_KEY = "donacion/no_volver_a_mostrar"
 DONATION_COUNT_KEY = "donacion/flujos_completados"
 DONATION_EVERY_N = 5
-PAYMENT_LINK = "https://link.mercadopago.com.ar/neithloom"
+PAYMENT_LINK = "https://link.mercadopago.cl/neithloom"
 QR_IMAGE_PATH = PROJECT_ROOT / "images" / "donacion" / "mp_qr.png"
 
 
