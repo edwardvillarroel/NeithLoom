@@ -21,6 +21,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QFontMetrics,
+    QGuiApplication,
     QIcon,
     QImage,
     QPainter,
@@ -93,6 +94,22 @@ GUIDE_ASK_MIN_PER_1000 = 45.0
 
 # Carpeta de destino del último guardado, para preseleccionarla al volver.
 LAST_SAVE_DIR_KEY = "gui/last_save_dir"
+
+# Donación opcional. Se apoya en el mismo QSettings() desnudo que el resto de
+# la app: se recuerda si el usuario pidió no volver a ver el mensaje y, con un
+# contador simple de flujos completados, se muestra 1 de cada DONATION_EVERY_N
+# finalizaciones exitosas (nunca la primera).
+DONATION_SUPPRESS_KEY = "donacion/no_volver_a_mostrar"
+DONATION_COUNT_KEY = "donacion/flujos_completados"
+DONATION_EVERY_N = 5
+PAYMENT_LINK = "https://link.mercadopago.com.ar/neithloom"
+QR_IMAGE_PATH = PROJECT_ROOT / "images" / "donacion" / "mp_qr.png"
+
+
+def _donation_settings() -> QSettings:
+    # Con org/aplicación vacíos el QSettings() desnudo de PySide6 es un objeto
+    # nulo que no persiste nada; la forma explícita sí escribe en el registro.
+    return QSettings("NeithLoom", "NeithLoom")
 
 _PICK_BG_TEXT = "Seleccionar fondo"
 _RECOLOR_TEXT = "Cambiar color de zona"
@@ -2644,6 +2661,7 @@ class MainWindow(QMainWindow):
     def _on_export_done(self, path: str) -> None:
         self._export_status_label.setText(f"Guardado en {path}")
         self._show_export_confirmation(path)
+        self._maybe_show_donation()
 
     def _on_export_failed(self, message: str) -> None:
         self._export_status_label.setText("No se pudo guardar")
@@ -2697,6 +2715,107 @@ class MainWindow(QMainWindow):
         again_button.clicked.connect(_start_again)
 
         layout.addWidget(buttons)
+        dialog.exec()
+
+    def _maybe_show_donation(self) -> None:
+        """Decide si toca mostrar el mensaje de donación tras un guardado.
+
+        Se cuenta un flujo completado por cada exportación exitosa. El mensaje
+        aparece 1 de cada `DONATION_EVERY_N` veces y nunca en la primera, a
+        menos que el usuario haya pedido no volver a verlo.
+        """
+        settings = _donation_settings()
+        if settings.value(DONATION_SUPPRESS_KEY, False, type=bool):
+            return
+        count = int(settings.value(DONATION_COUNT_KEY, 0, type=int) or 0) + 1
+        settings.setValue(DONATION_COUNT_KEY, count)
+        if count % DONATION_EVERY_N != 0:
+            return
+        self._show_donation_ask()
+
+    def _show_donation_ask(self) -> None:
+        """Primera ventana: mensaje breve + 'Donar' / 'No, gracias' + casilla."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("NeithLoom es gratis")
+        dialog.setMinimumWidth(420)
+        layout = QVBoxLayout(dialog)
+
+        message = QLabel(
+            "<b>NeithLoom es y será siempre gratis.</b><br><br>"
+            "Hacer bordados no tiene costo para ti, pero si el programa te "
+            "resulta útil, un aporte voluntario nos ayuda a seguir mejorándolo. "
+            "Es 100% opcional: puedes cerrar esta ventana y seguir igual."
+        )
+        message.setWordWrap(True)
+        layout.addWidget(message)
+
+        suppress = QCheckBox("No volver a mostrar este mensaje")
+        layout.addWidget(suppress)
+
+        buttons = QDialogButtonBox()
+        donate_button = buttons.addButton(
+            "Donar", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        no_button = buttons.addButton(
+            "No, gracias", QDialogButtonBox.ButtonRole.RejectRole
+        )
+        donate_button.clicked.connect(dialog.accept)
+        no_button.clicked.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        result = dialog.exec()
+        if suppress.isChecked():
+            _donation_settings().setValue(DONATION_SUPPRESS_KEY, True)
+        if result == QDialog.DialogCode.Accepted:
+            self._show_donation_pay()
+
+    def _show_donation_pay(self) -> None:
+        """Segunda ventana: código QR fijo + copiar link + cerrar."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Donar")
+        dialog.setMinimumWidth(360)
+        layout = QVBoxLayout(dialog)
+
+        if QR_IMAGE_PATH.is_file():
+            pixmap = QPixmap(str(QR_IMAGE_PATH))
+            pixmap = pixmap.scaled(
+                240,
+                240,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            qr_label = QLabel()
+            qr_label.setPixmap(pixmap)
+            qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(qr_label)
+
+        hint = QLabel(
+            "Escanea el código QR y escribe el monto que quieras aportar."
+        )
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(hint)
+
+        copy_status = QLabel("")
+        copy_status.setStyleSheet("color: gray;")
+        copy_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(copy_status)
+
+        def _copy_link() -> None:
+            QGuiApplication.clipboard().setText(PAYMENT_LINK)
+            copy_status.setText("Link copiado")
+
+        buttons = QDialogButtonBox()
+        copy_button = buttons.addButton(
+            "Copiar link de pago", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        close_button = buttons.addButton(
+            "Cerrar", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        copy_button.clicked.connect(_copy_link)
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(buttons)
+
         dialog.exec()
 
     def _reset_flow(self) -> None:
