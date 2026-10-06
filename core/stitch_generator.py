@@ -48,8 +48,7 @@ La matriz de códigos pasa antes por la limpieza morfológica ligera
 filtro de tamaño mínimo por región (`_drop_tiny_regions`), que ya existían y
 no cambian. Las funciones scanline de la versión previa (`_tatami_fill`,
 `_fill_region_tatami`, `_outline_stitches`, `_rotate_comp_mask`) se conservan
-(no las usa `generate_stitches`) para que los benchmarks de `scripts/` sigan
-funcionando.
+como legado; `generate_stitches` no las usa.
 """
 
 from dataclasses import dataclass, field
@@ -61,7 +60,6 @@ from scipy import ndimage
 from PIL import Image, ImageDraw
 
 from core import mockup as mockup_module
-from core import resource_logger
 
 DENSITY_OPTIONS = ("Baja", "Media", "Alta")
 
@@ -2076,7 +2074,6 @@ def order_tatami_rows(
     return out
 
 
-@resource_logger.measure_resources("generate_stitches")
 def generate_stitches(
     image: Image.Image,
     threads_used: list,
